@@ -132,4 +132,65 @@ describe('cacheMock', function(){
 		require('fs').unlinkSync(tmpPath);
 		delete require.cache[require.resolve(tmpPath)];
 	});
+
+	it('should delete a module from the cache', function(){
+		const tmpPath = path.join(__dirname, 'tmpDeleteModule.js');
+		fs.writeFileSync(tmpPath, `module.exports = { a: 1 };`);
+		require(tmpPath);
+		assert.isDefined(require.cache[require.resolve(tmpPath)]);
+
+		cacheMock.delete(tmpPath);
+		assert.isUndefined(require.cache[require.resolve(tmpPath)]);
+
+		fs.unlinkSync(tmpPath);
+	});
+
+	it('should remove a preloaded module from cache on restore if it was originally absent', function(){
+		const tmpPath = path.join(__dirname, 'tmpAbsentModule.js');
+		fs.writeFileSync(tmpPath, `module.exports = {};`);
+		const resolvedPath = path.resolve(tmpPath);
+		delete require.cache[resolvedPath];
+
+		cacheMock.require(tmpPath, { mocked: true });
+		assert.isDefined(require.cache[resolvedPath]);
+
+		cacheMock.restore(tmpPath);
+		assert.isUndefined(require.cache[resolvedPath], 'should be removed from cache because it was not there before');
+
+		fs.unlinkSync(tmpPath);
+	});
+
+	it('should restore the original Module object when preloading over an existing module', function(){
+		const tmpPath = path.join(__dirname, 'tmpExistingModule.js');
+		fs.writeFileSync(tmpPath, `module.exports = { original: true };`);
+		require(tmpPath);
+		const resolvedPath = require.resolve(tmpPath);
+		const originalCachedModule = require.cache[resolvedPath];
+
+		cacheMock.require(tmpPath, { mocked: true });
+		assert.notStrictEqual(require.cache[resolvedPath], originalCachedModule);
+
+		cacheMock.restore(tmpPath);
+		assert.strictEqual(require.cache[resolvedPath], originalCachedModule, 'should restore original Module object');
+
+		fs.unlinkSync(tmpPath);
+		delete require.cache[resolvedPath];
+	});
+
+	it('should preserve the original state even if cacheMock.require is called multiple times', function(){
+		const tmpPath = path.join(__dirname, 'tmpRedundantModule.js');
+		fs.writeFileSync(tmpPath, `module.exports = { original: true };`);
+		require(tmpPath);
+		const resolvedPath = require.resolve(tmpPath);
+		const originalCachedModule = require.cache[resolvedPath];
+
+		cacheMock.require(tmpPath, { mock1: true });
+		cacheMock.require(tmpPath, { mock2: true });
+
+		cacheMock.restore(tmpPath);
+		assert.strictEqual(require.cache[resolvedPath], originalCachedModule);
+
+		fs.unlinkSync(tmpPath);
+		delete require.cache[resolvedPath];
+	});
 });

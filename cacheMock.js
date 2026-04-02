@@ -4,6 +4,8 @@ const path = require('node:path');
 
 const logger = new Logger(path.basename(__filename));
 
+const NULL_MODULE = Symbol.for('cacheMock.nullModule');
+
 /**
  * Injects mock implementations into the exports of a cached Node.js module.
  *
@@ -44,10 +46,14 @@ function cacheMock(path, mockExports){
 	cacheMock.cache[resolvedPath] ??= { ...cachedModule.exports };
 
 	Object.assign(cachedModule.exports, mockExports);
+	logger.debug(`Module at path: ${resolvedPath} exports after merging mock: ${JSON.stringify(cachedModule.exports, null, 2)}`);
+
+	logger.debug(`Module at path: ${resolvedPath} successfully mocked.`);
+	logger.silly(`Current exports: ${JSON.stringify(cachedModule.exports, null, 2)}`);
 }
 Object.defineProperties(cacheMock, {
 	/**
-	 * Internal cache storing original module exports before they were mocked.
+	 * Internal cache storing original module states (Module object, exports copy, or NULL_MODULE).
 	 *
 	 * @name cacheMock.cache
 	 * @type {Object<string, any>}
@@ -57,7 +63,21 @@ Object.defineProperties(cacheMock, {
 		value: {}
 	},
 	/**
-	 * Restores previously mocked modules to their original exports.
+	 * Deletes a module from the require cache.
+	 *
+	 * @function cacheMock.delete
+	 * @param {string} modulePath - Path to the module (relative or absolute).
+	 * @returns {void}
+	 */
+	delete: {
+		value: function(modulePath){
+			const resolvedPath = require.resolve(modulePath);
+			logger.debug(`Deleting module from cache: ${resolvedPath}`);
+			delete require.cache[resolvedPath];
+		}
+	},
+	/**
+	 * Restores previously mocked modules to their original state.
 	 *
 	 * If a `path` is given, only that module is restored. If omitted, all modules in the internal cache are restored.
 	 * After restoration, the corresponding entries are removed from `cacheMock.cache`.
@@ -76,13 +96,26 @@ Object.defineProperties(cacheMock, {
 			const entries = path ? [require.resolve(path)] : Object.keys(cacheMock.cache);
 
 			for(const resolvedPath of entries){
-				const cachedModule = require.cache[resolvedPath];
 				const original = cacheMock.cache[resolvedPath];
-				if(cachedModule && original){
-					logger.debug(`Restoring module at path: ${resolvedPath}`);
-					cachedModule.exports = original;
-					delete cacheMock.cache[resolvedPath];
+				if(original === undefined){
+					continue;
 				}
+
+				if(original === NULL_MODULE){
+					logger.debug(`Removing module that was originally absent: ${resolvedPath}`);
+					delete require.cache[resolvedPath];
+				}else if(original instanceof Module){
+					logger.debug(`Restoring original module object for path: ${resolvedPath}`);
+					require.cache[resolvedPath] = original;
+				}else{
+					// Fallback for cacheMock() which saves a copy of exports
+					const cachedModule = require.cache[resolvedPath];
+					if(cachedModule){
+						logger.debug(`Restoring original exports for module: ${resolvedPath}`);
+						cachedModule.exports = original;
+					}
+				}
+				delete cacheMock.cache[resolvedPath];
 			}
 		}
 	},
@@ -90,7 +123,8 @@ Object.defineProperties(cacheMock, {
 	 * Preload a module into `require.cache` without executing its real code. This prevents module-level side effects
 	 * while allowing you to inject a stubbed module for testing or pre-mocking.
 	 *
-	 * @function @param {string} modulePath - Path to the module (relative or absolute).
+	 * @function
+	 * @param {string} modulePath - Path to the module (relative or absolute).
 	 * @param {Object<string, any>} [exports={}] - Optional initial exports object to assign to the stub module. Defaults to an empty object.
 	 * @returns {NodeModule} The stub module object inserted into `require.cache`.
 	 *
@@ -107,19 +141,33 @@ Object.defineProperties(cacheMock, {
 	require: {
 		value: function(modulePath, exports = {}){
 			const resolvedPath = require.resolve(modulePath);
+			logger.debug(`Preloading stub module at path: ${resolvedPath}${exports ? ` with exports ${typeof exports === 'object' ? JSON.stringify(exports, null, 2) : exports}` : ''}`);
 
-			if(require.cache[resolvedPath] === undefined){
-				logger.debug(`Creating empty cache entry for module: ${resolvedPath}`);
-
-				const m = new Module(resolvedPath, module.parent);
-				m.filename = resolvedPath;
-				m.loaded = true;
-				m.exports = exports;
-
-				require.cache[resolvedPath] = m;
+			if(cacheMock.cache[resolvedPath] === undefined){
+				if(require.cache[resolvedPath] !== undefined){
+					cacheMock.cache[resolvedPath] = require.cache[resolvedPath];
+				}else{
+					cacheMock.cache[resolvedPath] = NULL_MODULE;
+				}
 			}
+
+			if(require.cache[resolvedPath] !== undefined){
+				delete require.cache[resolvedPath];
+			}
+			logger.debug(`Creating empty cache entry for module: ${resolvedPath}`);
+
+			const m = new Module(resolvedPath, module.parent);
+			m.filename = resolvedPath;
+			m.loaded = true;
+			m.exports = exports;
+
+			require.cache[resolvedPath] = m;
+
+			logger.debug(`Module at path: ${resolvedPath} is now in cache.`);
+			logger.silly(`${JSON.stringify(require.cache[resolvedPath], null, 2)}`);
 		}
 	}
 });
 
 module.exports = cacheMock;
+
